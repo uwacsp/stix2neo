@@ -4,160 +4,158 @@ import argparse
 import json
 import re
 import sys
-from py2neo import Graph, Node, Relationship, NodeMatcher, cypher
+from os import listdir
+import os
+from neo4j import GraphDatabase
 
-# -----------------------------------------------------------------
-# BUILD_LABEL
-# -----------------------------------------------------------------
+
 def build_label(txt):
+    if txt.startswith('intrusion-set'):
+        return 'Group'
+    if txt.startswith('malware'):
+        return 'Software'
+    if txt.startswith('tool'):
+        return 'Tool'
+    if txt.startswith('attack-pattern'):
+        return 'Technique'
+    if txt.startswith('identity'):
+        return 'Identity'
+    raise TypeError(f"Unknown object type: {txt}")
 
-	if txt.startswith('intrusion-set'):		return 'Group'
-	if txt.startswith('malware'):			return 'Software'
-	if txt.startswith('tool'):				return 'Tool'
-	if txt.startswith('attack-pattern'):	return 'Technique'
-	if txt.startswith('course-of-action'):	return 'Technique'
-	return 'Unknown'
 
-# -----------------------------------------------------------------
-# BUILD ALIASES
-# -----------------------------------------------------------------
-def build_objects(obj,key):
+def build_objects(obj):
+    with driver.session() as session:
+        label = build_label(obj['type'])
+        session.run(
+            f"""
+            CREATE (n: {label} {{
+                    name: $name,
+                    id: $id,
+                    created: $created,
+                    modified: $modified,
+                    description: $description
+                }}
+            )
+            """,
+            name=obj['name'],
+            id=obj['id'],
+            type=obj['type'],
+            created=obj.get('created', "None"),
+            modified=obj.get('modified', "None"),
+            description=obj.get('description', "None")
+        )
 
-	label = build_label(obj['type'])
+    # Create relations for aliases
+    if obj.get('aliases'):
+        aliases = obj['aliases']
+    elif obj.get('x_mitre_aliases'):
+        aliases = obj['x_mitre_aliases']
+    else:
+        return  # No Aliases
 
-	# add properties
-	props = {}
-	props['name'] = obj['name']
-	props['id'] = obj['id']
-	props['type'] = obj['type']
-	if obj.get('description'):		props['description'] = obj['description'] # cypher.cypher_escape( obj['description'] )
-	if obj.get('created'):			props['created'] = obj['created']
-	if obj.get('modified'):			props['modified'] = obj['modified']
-	if obj.get('x_mitre_version'):	props['version'] = obj['x_mitre_version']
-	# create node for the group
-	node_main = Node(label, **props)
-	# merge node to graph
-	graph.merge(node_main,label,'name')
-	print('%s: "%s"' % (label,obj['name']),end='') if dbg_mode else None
+    for alias in aliases:
+        if alias != obj['name']:
+            with driver.session() as session:
+                session.run(
+                    """
+                    MATCH (m {id: $id})
+                    CREATE (n: Alias { name: $name, type: $type })
+                    CREATE (n)-[rel: ALIAS]->(m)
+                    """,
+                    name=alias, type=obj['type'], id=obj['id']
+                )
+    return
 
-	# dealing with aliases
-	if obj.get('aliases'): 
-		aliases = obj['aliases']
-	elif obj.get('x_mitre_aliases'): 
-		aliases = obj['x_mitre_aliases']
-	else:
-		aliases = None
-	if aliases:
-		for alias in aliases:
-			if alias != obj['name']:
-				node_alias = Node('Alias', name=alias, type=obj['type'])
-				relation = Relationship.type('alias')
-				graph.merge(relation(node_main,node_alias),label,'name')
-				print(' -[alias]-> "%s"' % (alias),end='') if dbg_mode else None
-	print() if dbg_mode else None
 
-# -----------------------------------------------------------------
-# BUILD RELATIONS
-# -----------------------------------------------------------------
 def build_relations(obj):
+    source_name = NAMES.get(obj['source_ref'])
+    target_name = NAMES.get(obj['target_ref'])
 
-	if not gnames.get(obj['source_ref']): return
-	if not gnames.get(obj['target_ref']): return
-	
-	m = NodeMatcher(graph)
+    if source_name is None:
+        print('Source name None', file=sys.stderr)
+        return
+    if target_name is None:
+        print('Target name None', file=sys.stderr)
+        return
 
-	source = m.match( build_label(obj['source_ref']), name=gnames[obj['source_ref']] ).first()
-	target = m.match( build_label(obj['target_ref']), name=gnames[obj['target_ref']] ).first()
+    relation = obj['relationship_type']
 
-	# source = Node( build_label(obj['source_ref']), name=gnames[obj['source_ref']], id=obj['source_ref'] )
-	# target = Node( build_label(obj['target_ref']), name=gnames[obj['target_ref']], id=obj['target_ref'] )
-	relation = Relationship.type( obj['relationship_type'] )
+    with driver.session() as session:
+        session.run(
+            "MATCH (source {name: $name1}) "
+            "MATCH (target {name: $name2}) "
+            f"CREATE (source)-[rel: {relation}]->(target)",
+            name1=source_name,
+            name2=target_name
+        )
 
-	graph.merge(relation(source,target),build_label(obj['source_ref']),'name')
-	print('Relation: "%s" -[%s]-> "%s"' % (gnames[obj['source_ref']],obj['relationship_type'],gnames[obj['target_ref']]) ) if dbg_mode else None
+    print('Relation: "%s" -[%s]-> "%s"' % (
+        NAMES[obj['source_ref']], obj['relationship_type'], NAMES[obj['target_ref']])
+          )
 
-# -----------------------------------------------------------------
-# MAIN
-# -----------------------------------------------------------------
 
-#
-# set command-line arguments and parsing options
-parser = argparse.ArgumentParser()
-parser.add_argument('-d','--debug', help='enter debug mode', default=False, action='store_true')
-parser.add_argument('-f', help='input file name', metavar='<filename>', action='store', required=True)
-parser.add_argument('-g','--groups', help='import Groups objects (type:intrusion-set)', default=False, action='store_true')
-parser.add_argument('-s','--softwares', help='import Softwares objects (type:malware)', default=False, action='store_true')
-parser.add_argument('-o','--tools', help='import Tools objects (type:tool)', default=False, action='store_true')
-parser.add_argument('-t','--techniques', help='import Techniques objects (type:attack-pattern and type:course-of-action)', default=False, action='store_true')
-parser.add_argument('-r','--relations', help='import Relations objects (type:relationship)', default=False, action='store_true')
-args = parser.parse_args()
+def process_file(data: dict):
+    for obj in data['objects']:
+        if obj['type'] == 'relationship':
+            build_relations(obj)
+        else:
+            NAMES[obj['id']] = obj['name']
+            build_objects(obj)
 
-#
-# checks arguments and options
-dbg_mode = True if args.debug else None
-json_file = args.f if args.f else None
 
-#
-# load JSON data from file
-try:
-	with open(json_file) as fh:
-		data = json.load(fh)
-	fh.close()
-except Exception as e:
-	sys.stderr.write( '[ERROR] reading configuration file %s\n' % json_file )
-	sys.stderr.write( '[ERROR] %s\n' % str(e) )
-	sys.exit(1)
+def recurse_dirs(path: str, strip=False):
+    files = listdir(path)
+    if strip:
+        files.remove('x-mitre-matrix')
+        files.remove('README.md')
+        files.remove('course-of-action')
+        files.remove('marking-definition')
+        files.remove('enterprise-attack.json')
+        files.remove('x-mitre-tactic')
+        # Shuffle relationship to the end
+        files.remove('relationship')
+        files.append('relationship')
 
-#
-# open graph connection
-graph_bolt = "bolt://127.0.0.1:7687"
-graph_auth = ("neo4j","test")
+    for file in files:
+        file_path = f'{path}/{file}'
+        if os.path.isdir(file_path):
+            recurse_dirs(file_path)
+        else:
+            try:
+                with open(file_path, 'r', encoding='utf-8') as fp:
+                    data = json.load(fp)
+                    process_file(data)
+            except json.decoder.JSONDecodeError:
+                print(f"FAILED: {file_path}", file=sys.stderr)
+            except Exception as e:
+                print("Problem.", e, file=sys.stderr)
 
-graph = Graph(graph_bolt,auth=graph_auth)
 
-# 
-# Delete existing nodes and edges
-graph.delete_all()
+if __name__ == "__main__":
+    # set command-line arguments and parsing options
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-i', help='input directory', metavar='<dirname>', action='store', required=True)
+    args = parser.parse_args()
 
-# 
-# Global names
-gnames = {}
+    # open graph connection
+    uri = "bolt://127.0.0.1:7687"
+    graph_auth = None
 
-# 
-# Walk through JSON objects to create nodes
-for obj in data['objects']:
+    driver = GraphDatabase.driver(uri, auth=graph_auth, encrypted=False)
 
-	# if JSON object is about Groups
-	if args.groups and obj['type']=='intrusion-set':
-		gnames[ obj['id'] ] = obj['name']
-		build_objects(obj,'aliases')
+    # Delete existing nodes and edges
+    with driver.session() as session:
+        session.run(
+            """
+            MATCH (n)
+            DETACH DELETE n
+            """
+        )
 
-	# if JSON object is about Softwares
-	if args.softwares and obj['type']=='malware':
-		gnames[ obj['id'] ] = obj['name']
-		build_objects(obj,'x_mitre_aliases')
+    # Global names
+    NAMES = {}
 
-	# if JSON object is about Tools
-	if args.tools and obj['type']=='tool':
-		gnames[ obj['id'] ] = obj['name']
-		build_objects(obj,'x_mitre_aliases')
-
-	# if JSON object is about Techniques
-	if args.techniques and (obj['type']=='attack-pattern' or obj['type']=='course-of-action'):
-		gnames[ obj['id'] ] = obj['name']
-		build_objects(obj,null)
-		# label = build_label(obj['type'])
-		# node_main = Node(label, name=obj['name'], id=obj['id'])
-		# graph.merge(node_main,label,'name')
-		# print('%s: "%s"' % (label,obj['name']) ) if dbg_mode else None
-
-# 
-# Walk through JSON objects to create edges
-for obj in data['objects']:
-
-	# if JSON object is about Relationships
-	if args.relations and obj['type']=='relationship':
-		build_relations(obj)
-
-#
-# End
+    # checks arguments and options
+    path = args.i
+    assert path is not None, "Path is None"
+    recurse_dirs(path, strip=True)
