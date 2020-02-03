@@ -68,30 +68,25 @@ def build_objects(obj):
 
 
 def build_relations(obj):
-    source_name = NAMES.get(obj['source_ref'])
-    target_name = NAMES.get(obj['target_ref'])
-
-    if source_name is None:
-        print('Source name None', file=sys.stderr)
-        return
-    if target_name is None:
-        print('Target name None', file=sys.stderr)
-        return
+    source: str = obj['source_ref']
+    target: str = obj['target_ref']
 
     relation = obj['relationship_type']
+    if source.startswith('course-of-action') \
+            or target.startswith('course-of-action')\
+            or relation.startswith('revoked'):
+        return
 
     with driver.session() as session:
         session.run(
-            "MATCH (source {name: $name1}) "
-            "MATCH (target {name: $name2}) "
+            "MATCH (source {id: $name1}) "
+            "MATCH (target {id: $name2}) "
             f"CREATE (source)-[rel: {relation}]->(target)",
-            name1=source_name,
-            name2=target_name
+            name1=source,
+            name2=target
         )
 
-    print('Relation: "%s" -[%s]-> "%s"' % (
-        NAMES[obj['source_ref']], obj['relationship_type'], NAMES[obj['target_ref']])
-          )
+    print('Relation: "%s" -[%s]-> "%s"' % (source, obj['relationship_type'], target))
 
 
 def process_file(data: dict):
@@ -99,7 +94,6 @@ def process_file(data: dict):
         if obj['type'] == 'relationship':
             build_relations(obj)
         else:
-            NAMES[obj['id']] = obj['name']
             build_objects(obj)
 
 
@@ -150,9 +144,6 @@ if __name__ == "__main__":
             DETACH DELETE n
             """
         )
-
-    # Global names
-    NAMES = {}
 
     # checks arguments and options
     path = args.i
