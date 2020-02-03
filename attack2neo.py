@@ -2,11 +2,11 @@
 
 import argparse
 import json
-import re
 import sys
 from os import listdir
 import os
 from neo4j import GraphDatabase
+from secrets import graph_auth
 
 
 def build_label(txt):
@@ -139,7 +139,6 @@ if __name__ == "__main__":
 
     # open graph connection
     uri = "bolt://127.0.0.1:7687"
-    graph_auth = None
 
     driver = GraphDatabase.driver(uri, auth=graph_auth, encrypted=False)
 
