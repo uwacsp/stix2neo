@@ -9,6 +9,14 @@ from neo4j import GraphDatabase
 from secrets import graph_auth
 
 
+def attack_to_ckc_index(ckc_name: str) -> int:
+    if ckc_name is None:
+        return 13
+    return ["initial-access", "execution", "persistence", "privilege-escalation",
+            "defense-evasion", "credential-access", "discovery", "lateral-movement",
+            "collection", "command-and-control", "exfiltration", "impact"].index(ckc_name)
+
+
 def build_label(txt):
     if txt.startswith('intrusion-set'):
         return 'Group'
@@ -24,6 +32,13 @@ def build_label(txt):
 
 
 def build_objects(obj):
+    kill_chain = obj.get("kill_chain_phases", None)
+    if kill_chain is not None:
+        phase_name = kill_chain[0].get("phase_name", None)
+        phase = attack_to_ckc_index(phase_name)
+    else:
+        phase = 13
+
     with driver.session() as session:
         label = build_label(obj['type'])
         session.run(
@@ -33,7 +48,8 @@ def build_objects(obj):
                     id: $id,
                     created: $created,
                     modified: $modified,
-                    description: $description
+                    description: $description,
+                    phase: $phase
                 }}
             )
             """,
@@ -42,7 +58,8 @@ def build_objects(obj):
             type=obj['type'],
             created=obj.get('created', "None"),
             modified=obj.get('modified', "None"),
-            description=obj.get('description', "None")
+            description=obj.get('description', "None"),
+            phase=phase
         )
 
     # Create relations for aliases
@@ -81,7 +98,7 @@ def build_relations(obj):
         session.run(
             "MATCH (source {id: $name1}) "
             "MATCH (target {id: $name2}) "
-            f"CREATE (source)-[rel: {relation}]->(target)",
+            f"CREATE (source)-[rel: m{relation}]->(target)",
             name1=source,
             name2=target
         )
