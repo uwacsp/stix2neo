@@ -32,12 +32,12 @@ def build_label(txt):
 
 
 def build_objects(obj):
-    kill_chain = obj.get("kill_chain_phases", None)
-    if kill_chain is not None:
-        phase_name = kill_chain[0].get("phase_name", None)
-        phase = attack_to_ckc_index(phase_name)
-    else:
-        phase = 13
+    kill_chain = obj.get("kill_chain_phases", [])
+    phase = 13
+    for chain in kill_chain:
+        phase_name = chain.get("phase_name", None)
+        phase = p if (p := attack_to_ckc_index(phase_name)) < phase else phase
+        print(phase_name, "\t\t",  phase, '\t', obj['name'], obj['id'])
 
     with driver.session() as session:
         label = build_label(obj['type'])
@@ -103,7 +103,7 @@ def build_relations(obj):
             name2=target
         )
 
-    print('Relation: "%s" -[%s]-> "%s"' % (source, obj['relationship_type'], target))
+    # print('Relation: "%s" -[%s]-> "%s"' % (source, obj['relationship_type'], target))
 
 
 def process_file(data: dict):
