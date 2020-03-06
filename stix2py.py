@@ -10,6 +10,7 @@ groups = {}
 ids_to_name = {}
 ids_to_tech = {}
 
+
 def attack_to_ckc_index(ckc_name: str) -> int:
     if ckc_name is None:
         return 13
@@ -60,7 +61,6 @@ def build_relations(obj):
         source = ids_to_name[source]
         target = ids_to_tech[target]
         groups[source].add(target)
-
 
 
 def process_file(data: dict):
