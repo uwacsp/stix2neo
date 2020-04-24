@@ -6,7 +6,7 @@ import sys
 from os import listdir
 import os
 from neo4j import GraphDatabase
-from secrets import graph_auth
+from db_secrets import graph_auth
 
 
 def attack_to_ckc_index(ckc_name: str) -> int:
