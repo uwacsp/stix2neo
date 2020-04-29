@@ -8,19 +8,25 @@ from db_secrets import postgres_addr, postgres_auth, root_directory
 
 table_link = {"intrusion-set": "apt", "malware": "software", "tool": "software", "attack-pattern": "technique"}
 
+tactic_link = {
+    "initial-access": "TA0001",
+    "execution": "TA0002",
+    "persistence": "TA0003",
+    "privilege-escalation": "TA0004",
+    "defense-evasion": "TA0005",
+    "credential-access": "TA0006",
+    "discovery": "TA0007",
+    "lateral-movement": "TA0008",
+    "collection": "TA0009",
+    "command-and-control": "TA0011",
+    "exfiltration": "TA0010",
+    "impact": "TA0040",
+    None: None
+}
 
-def attack_to_ckc_index(ckc_name: str) -> int:
-    if ckc_name is None:
-        return 13
-    return ["initial-access", "execution", "persistence", "privilege-escalation",
-            "defense-evasion", "credential-access", "discovery", "lateral-movement",
-            "collection", "command-and-control", "exfiltration", "impact"].index(ckc_name)
 
-
-async def build_objects(obj):
-    # print(json.dumps(obj, indent=2))
+def build_objects(obj):
     label = table_link[obj['type']]
-    kill_chain = obj.get("kill_chain_phases", [])
     mitre_id = obj["external_references"][0]["external_id"]
 
     if obj.get("revoked", False) or obj.get("x_mitre_deprecated", False):
@@ -31,7 +37,7 @@ async def build_objects(obj):
         f"""
         INSERT INTO {label} (mitre_id, "name", description, stix_id) 
         VALUES (%s, %s, %s, %s);
-        """, (mitre_id, str(obj["name"]), obj.get("description", ""), obj["id"])
+        """, (mitre_id, obj["name"], obj.get("description", ""), obj["id"])
     )
 
     if label == "technique" and obj.get("x_mitre_is_subtechnique", False):
@@ -43,10 +49,6 @@ async def build_objects(obj):
             """, (mitre_id,)
         )
 
-    # phases = []
-    # for chain in kill_chain:
-    #     phase_id = attack_to_ckc_index(chain.get("phase_name", None))
-
     # Create relations for aliases
     if obj.get('aliases'):
         aliases = obj['aliases']
@@ -55,9 +57,34 @@ async def build_objects(obj):
     else:
         return  # No Aliases
 
+    add_aliases(obj['name'], aliases, cursor, label, mitre_id)
+
+    if label == "technique":
+        phases = []
+        kill_chain = obj.get("kill_chain_phases", [])
+        for chain in kill_chain:
+            phase_id = tactic_link[chain.get("phase_name", None)]
+            if phase_id is not None:
+                phases.append(phase_id)
+
+        if len(phases) > 0:
+            add_phases(phases, cursor, mitre_id)
+
+
+def add_phases(phases, cursor, mitre_id):
+    for phase in phases:
+        cursor.execute(
+            """
+            INSERT INTO technique_belongs_tactic (technique_id, tactic_id) 
+            VALUES (%s, %s);
+            """, (mitre_id, phase)
+        )
+
+
+def add_aliases(name, aliases, cursor, label, mitre_id):
     for alias in aliases:
-        if alias != obj['name']:
-            print(obj['name'], ":", alias)
+        if alias != name:
+            print(name, ":", alias)
             cursor.execute(
                 """
                 INSERT INTO alias ("name") VALUES (%s) RETURNING "id"
@@ -70,10 +97,9 @@ async def build_objects(obj):
                 VALUES (%s, %s)
                 """, (mitre_id, id_)
             )
-    return
 
 
-async def build_relations(obj):
+def build_relations(obj):
     source: str = obj['source_ref']
     target: str = obj['target_ref']
 
@@ -87,9 +113,6 @@ async def build_relations(obj):
 
     label = label_links[source[:4]]
     uses = label_links[target[:4]]
-
-    if label == "software" or uses == "software":
-        return
 
     if label == uses:
         return
@@ -107,12 +130,12 @@ async def build_relations(obj):
     )
 
 
-async def process_file(data: dict):
+def process_file(data: dict):
     for obj in data['objects']:
         if obj['type'] == 'relationship':
-            await build_relations(obj)
+            build_relations(obj)
         else:
-            await build_objects(obj)
+            build_objects(obj)
 
 
 def recurse_dirs(path: str, strip=False):
@@ -130,8 +153,8 @@ def recurse_dirs(path: str, strip=False):
         files.append('relationship')
         files.remove('intrusion-set')
         files.insert(0, 'intrusion-set')
-        files.remove('malware')
-        files.remove('tool')
+        # files.remove('malware')
+        # files.remove('tool')
 
     for file in files:
         file_path = f'{path}/{file}'
@@ -141,7 +164,7 @@ def recurse_dirs(path: str, strip=False):
             try:
                 with open(file_path, 'r', encoding='utf-8') as fp:
                     data = json.load(fp)
-                    asyncio.run(process_file(data))
+                    process_file(data)
             except json.decoder.JSONDecodeError:
                 print(f"FAILED: {file_path}", file=sys.stderr)
             except Exception as e:
